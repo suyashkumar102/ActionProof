@@ -90,51 +90,8 @@ Both the Email MCP server and the Filesystem MCP server reject direct requests. 
 
 ## Architecture
 
-<!-- SCREENSHOT: Take a screenshot of the ASCII architecture diagram below rendered in the GitHub README, or create a visual diagram. Save as docs/screenshot-architecture.png -->
+<img width="1116" height="630" alt="Screenshot 2026-11-24 231637" src="https://github.com/user-attachments/assets/61917703-7993-4fe9-8ad4-dc119d1e2400" />
 
-```
-Untrusted Agent
-       |
-       | MCP tool invocation
-       v
-+-------------------------------------------+
-|         ActionProof Gateway               |  port 8000
-|                                           |
-|  +---------+  +--------+  +----------+    |
-|  | Tool    |  | Policy |  | Data     |    |
-|  | Registry|  | Engine |  | Labels   |    |
-|  +---------+  +--------+  +----------+    |
-|       |            |           |          |
-|  Hash |       ALLOW / REQUIRE_APPROVAL / DENY
-|  check|            |           |          |
-|       |     +------+---+       |          |
-|       |     | Txn Svc  |  Egress check    |
-|       |     | propose  |  (label → dest)  |
-|       |     | approve  |                  |
-|       |     | execute  |                  |
-|       |     +----------+                  |
-|            Fingerprint +                  |
-|            HMAC token                     |
-|            Exclusive lock                  |
-|                                           |
-|    Hash-Chained Audit Engine              |
-|    (SHA-256 chain, tamper-evident)        |
-+-------------------------------------------+
-       |                        |
-       | Gateway key required   | Gateway key required
-       v                        v
-+------------------+   +------------------+
-| Email MCP Server |   | Filesystem MCP   |
-| port 8001        |   | Server port 8002 |
-| (send_email,     |   | (read_file,      |
-|  read_inbox)     |   |  write_file,     |
-|                  |   |  list_directory) |
-+------------------+   +------------------+
-       |                        |
-       v                        v
-  Mock sent mailbox        Sandboxed files
-                           (confidential / internal / public labels)
-```
 
 ---
 
