@@ -1,6 +1,12 @@
 # ActionProof
 
+<!-- BANNER: Paste a wide banner image here (1200x320 recommended). Use the docs/banner.svg as a base or take a screenshot of the dashboard in full screen. -->
+![Banner](docs/banner.svg)
+
 **Runtime Security, Policy Enforcement and Transaction Verification Gateway for AI Agents**
+
+<!-- SCREENSHOT: Dashboard overview — take a full-page screenshot of http://127.0.0.1:8000 showing the sidebar, agent feed, gateway intercept column, and right panel all populated after running a workflow. Save as docs/screenshot-dashboard.png -->
+![Dashboard](docs/screenshot-dashboard.svg)
 
 ---
 
@@ -15,6 +21,9 @@ ActionProof is a security gateway that sits between an AI agent and its connecte
 ## Core Capabilities
 
 ### Cryptographically Pinned Tool Registry
+
+<!-- SCREENSHOT: Click "Tool Poisoning" workflow in the UI. Take a screenshot showing the red REGISTRY DRIFT DETECTED panel with the injected description and the blocked tool call. Save as docs/screenshot-registry.png -->
+
 ActionProof registers each downstream MCP tool at startup and stores a SHA-256 hash of its definition — name, description, and input schema. Before creating any transaction, the gateway recomputes the hash and compares it against the pinned approved version. If the tool description or schema has changed since registration, the gateway raises a `REGISTRY_DRIFT` error and blocks all calls to that tool until the updated definition has been reviewed and re-approved. This prevents tool-definition poisoning attacks, where an attacker modifies a tool's description to inject instructions into the agent's context.
 
 ### Deterministic Policy Enforcement
@@ -41,12 +50,18 @@ Each approval token is recorded in the database with a `used_at` timestamp on fi
 The gateway continuously verifies that every registered tool definition still matches the hash that was reviewed and approved. If a downstream MCP server's tool description is modified after registration — intentionally or as the result of a supply-chain compromise — ActionProof detects the hash mismatch at the next proposal attempt and blocks execution until the new definition is explicitly re-approved by a human operator.
 
 ### Label-Based Data Egress Protection
+
+<!-- SCREENSHOT: Click "File Exfiltration" workflow in the UI. Take a screenshot showing the filesystem panel with colour-coded labels, the file read with the confidential badge, and the red DATA EGRESS BLOCKED panel in the gateway column. Save as docs/screenshot-egress.png -->
+
 Every file in the sandboxed filesystem carries a data label — `confidential`, `internal`, or `public`. When an agent reads a file, the label is returned with the content. When the agent then attempts to send that file as an email attachment to an external recipient, the policy engine checks the file's label. A `confidential` attachment being sent to an external domain is blocked with `P-DENY-001` before the email server receives any request. The agent can read the file (with approval), but cannot exfiltrate it.
 
 ### Concurrent Execution Safety
 All transaction executions are serialised using SQLite exclusive locks. When two concurrent requests attempt to execute the same transaction, the first acquires the lock, marks the token as consumed, and proceeds. The second request sees the terminal state and is rejected. This prevents double-spend attacks where an agent races multiple execution attempts against a single approval.
 
 ### Hash-Chained Audit Trail
+
+<!-- SCREENSHOT: Take a screenshot of the audit timeline in the UI after running a workflow, showing the chronological event log with PROPOSED, ALLOW/APPROVED, EXECUTED entries. Save as docs/screenshot-audit.png -->
+
 Every event in the lifecycle of a transaction is recorded in a SQLite audit log — proposal, policy decision, approval issuance, execution or block. Each event's hash is cryptographically chained to the previous event's hash using SHA-256. The chain starts with a genesis marker and every subsequent event includes the `previous_hash` in its own hash computation. The audit trail can be verified at any time via the `/v1/transactions/{id}/audit/verify` endpoint, which recomputes every hash and checks chain integrity. Tampering with any event breaks the chain and is immediately detected.
 
 ### Gateway-Only Downstream Access
@@ -55,6 +70,8 @@ Both the Email MCP server and the Filesystem MCP server reject direct requests. 
 ---
 
 ## Attack Scenarios Demonstrated
+
+<!-- SCREENSHOT: Click "Read & Act" workflow. Take a screenshot showing the agent feed with the injected email highlighted in red (SEND: directive visible) and the gateway column showing the DENY block. Save as docs/screenshot-injection.png -->
 
 | # | Scenario | Attack Vector | Gateway Response |
 |---|---|---|---|
@@ -68,6 +85,8 @@ Both the Email MCP server and the Filesystem MCP server reject direct requests. 
 ---
 
 ## Architecture
+
+<!-- SCREENSHOT: Take a screenshot of the ASCII architecture diagram below rendered in the GitHub README, or create a visual diagram. Save as docs/screenshot-architecture.png -->
 
 ```
 Untrusted Agent
@@ -281,6 +300,8 @@ The agent reads the live inbox, finds instructions in email bodies, constructs t
 ---
 
 ## Running the Agent Demo
+
+<!-- SCREENSHOT: Run `python demo/agent.py` and take a terminal screenshot showing the agent reading the inbox, finding the injected instruction, and the gateway blocking it. Save as docs/screenshot-terminal.png -->
 
 With all three servers running, open a fourth terminal:
 
