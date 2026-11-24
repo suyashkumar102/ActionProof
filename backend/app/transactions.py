@@ -58,13 +58,16 @@ class TransactionService:
 
     def seed_tool_registry(self) -> None:
         definition_path = Path(__file__).resolve().parents[2] / "mock_email_mcp" / "tool_definition.json"
-        definition = json.loads(definition_path.read_text(encoding="utf-8"))
-        definition_hash = sha256_prefixed(definition)
+        file_content = json.loads(definition_path.read_text(encoding="utf-8"))
+        # Support both a single tool object and a {"tools": [...]} list format.
+        tools = file_content.get("tools", [file_content])
         with self._session() as db:
-            db.execute(
-                "INSERT OR IGNORE INTO tool_registry VALUES (?, ?, ?, ?, ?)",
-                ("mock-email-v1", "send_email", canonical_json(definition), definition_hash, iso()),
-            )
+            for definition in tools:
+                definition_hash = sha256_prefixed(definition)
+                db.execute(
+                    "INSERT OR IGNORE INTO tool_registry VALUES (?, ?, ?, ?, ?)",
+                    ("mock-email-v1", definition["name"], canonical_json(definition), definition_hash, iso()),
+                )
 
     def _tool_hash(self, db, invocation: Invocation) -> str:
         row = db.execute(
@@ -75,8 +78,12 @@ class TransactionService:
             raise ServiceError(403, "UNPINNED_TOOL", "Tool is not pinned in the reviewed registry")
         # Verify the pinned definition still matches the on-disk approved definition.
         definition_path = Path(__file__).resolve().parents[2] / "mock_email_mcp" / "tool_definition.json"
-        approved_definition = json.loads(definition_path.read_text(encoding="utf-8"))
-        approved_hash = sha256_prefixed(approved_definition)
+        file_content = json.loads(definition_path.read_text(encoding="utf-8"))
+        tools = file_content.get("tools", [file_content])
+        approved_def = next((t for t in tools if t["name"] == invocation.tool_name), None)
+        if approved_def is None:
+            raise ServiceError(403, "UNPINNED_TOOL", f"Tool '{invocation.tool_name}' not found in definition file")
+        approved_hash = sha256_prefixed(approved_def)
         if row["definition_hash"] != approved_hash:
             raise ServiceError(
                 409,

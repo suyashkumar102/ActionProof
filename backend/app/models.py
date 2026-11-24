@@ -42,4 +42,3 @@ class DecisionResponse(BaseModel):
     status: str
     approval_request: dict[str, Any] | None = None
     changed_fields: list[str] = []
-

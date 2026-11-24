@@ -22,6 +22,12 @@ class EmailMCPClient:
             response.raise_for_status()
             return response.json()
 
+    async def read_inbox(self) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{self.base_url}/mcp/inbox")
+            response.raise_for_status()
+            return response.json()["messages"]
+
     async def sent_messages(self) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(f"{self.base_url}/mcp/mailbox/sent")
