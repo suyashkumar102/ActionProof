@@ -13,6 +13,7 @@ class Settings:
     secret: str = os.getenv("ACTIONPROOF_SECRET", "demo-secret-change-before-deployment")
     gateway_key: str = os.getenv("ACTIONPROOF_GATEWAY_KEY", "local-gateway-only-key")
     email_mcp_url: str = os.getenv("ACTIONPROOF_EMAIL_MCP_URL", "http://127.0.0.1:8001")
+    filesystem_mcp_url: str = os.getenv("ACTIONPROOF_FILESYSTEM_MCP_URL", "http://127.0.0.1:8002")
     db_path: Path = Path(os.getenv("ACTIONPROOF_DB_PATH", str(ROOT / "data" / "actionproof.db")))
     approval_seconds: int = int(os.getenv("ACTIONPROOF_APPROVAL_SECONDS", "300"))
     policy_version: str = "v1"

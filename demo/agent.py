@@ -287,8 +287,11 @@ def run_workflow_approval_tamper() -> None:
 
     log_think("Reading inbox to find the partner email to forward...")
     messages = tool_read_inbox()
+    if not messages:
+        print(c(RED, "  Inbox is empty — restart both servers and try again.\n"))
+        return
     target = next((m for m in messages if "partner" in m.get("body","").lower()
-                   or "forward" in m.get("body","").lower()), messages[1])
+                   or "forward" in m.get("body","").lower()), messages[0])
 
     action = parse_action_from_email(target)
     if not action:
@@ -362,6 +365,9 @@ def run_workflow_registry_tamper() -> None:
 
     log_think("Reading inbox and acting on a forwarding instruction...")
     messages = tool_read_inbox()
+    if not messages:
+        print(c(RED, "  Inbox is empty — restart both servers and try again.\n"))
+        return
     action = next((parse_action_from_email(m) for m in messages
                    if parse_action_from_email(m) is not None), None)
     if not action:
@@ -393,6 +399,9 @@ def run_workflow_token_replay() -> None:
 
     log_think("Reading inbox to find a forwardable email...")
     messages = tool_read_inbox()
+    if not messages:
+        print(c(RED, "  Inbox is empty — restart both servers and try again.\n"))
+        return
     action = next(
         (parse_action_from_email(m) for m in messages if parse_action_from_email(m) and
          "evil" not in parse_action_from_email(m).get("to","") and

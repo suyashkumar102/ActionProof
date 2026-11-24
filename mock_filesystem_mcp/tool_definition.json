@@ -1,0 +1,38 @@
+{
+  "tools": [
+    {
+      "name": "list_directory",
+      "description": "List files and directories in the sandboxed filesystem.",
+      "input_schema": {
+        "type": "object",
+        "required": [],
+        "properties": {
+          "path": {"type": "string", "default": "/"}
+        }
+      }
+    },
+    {
+      "name": "read_file",
+      "description": "Read the content of a sandboxed file. Returns content and data label.",
+      "input_schema": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Write content to a sandboxed file.",
+      "input_schema": {
+        "type": "object",
+        "required": ["path", "content"],
+        "properties": {
+          "path": {"type": "string"},
+          "content": {"type": "string"}
+        }
+      }
+    }
+  ]
+}
