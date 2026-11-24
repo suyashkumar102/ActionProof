@@ -136,37 +136,134 @@ Untrusted Agent
 
 ## Run Locally
 
-Python 3.11 or later. Three terminals from the repository root.
+> **This project runs entirely on your local machine. It will not work in browser-based environments, online IDEs, or cloud sandboxes (Replit, CodeSandbox, GitHub Codespaces, etc.) because those block access to localhost ports. Clone the repo and run it on your own computer.**
 
-**Step 1 — Install dependencies (once)**
+**Requirements:** Python 3.11 or later, Git. No Node.js, no Docker, no secrets file needed.
 
-```powershell
+---
+
+### Step 1 — Clone and install
+
+```bash
+git clone https://github.com/suyashkumar102/ActionProof.git
+cd ActionProof
 python -m venv .venv
+```
+
+**Windows (PowerShell):**
+```powershell
 .\.venv\Scripts\Activate.ps1
 pip install -r backend\requirements.txt
 ```
 
-**Terminal 1 — Email MCP server**
+**macOS / Linux:**
+```bash
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+```
 
+---
+
+### Step 2 — Start the Email MCP server
+
+Open a terminal in the repo root and run:
+
+**Windows:**
 ```powershell
 .\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH = "$PWD;$PWD\backend"
 uvicorn mock_email_mcp.server:app --port 8001
 ```
 
-**Terminal 2 — ActionProof gateway**
+**macOS / Linux:**
+```bash
+source .venv/bin/activate
+PYTHONPATH=. uvicorn mock_email_mcp.server:app --port 8001
+```
 
+You should see:
+```
+INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+```
+
+Leave this terminal running.
+
+---
+
+### Step 3 — Start the ActionProof gateway
+
+Open a **second terminal** in the repo root:
+
+**Windows:**
 ```powershell
 .\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH = "$PWD;$PWD\backend"
-uvicorn backend.app.main:app --reload --port 8000
+uvicorn backend.app.main:app --port 8000
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000) to access the interactive UI.
+**macOS / Linux:**
+```bash
+source .venv/bin/activate
+PYTHONPATH=.:backend uvicorn backend.app.main:app --port 8000
+```
 
-Interactive API documentation is available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+You should see:
+```
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+```
 
-No Node.js, no build step, no secrets file required. The `.env.example` file documents all configurable environment variables.
+Leave this terminal running.
+
+---
+
+### Step 4 — Verify both servers are up
+
+Open your browser and go to:
+- **http://127.0.0.1:8000/v1/health** — should return `{"ok": true}`
+- **http://127.0.0.1:8001/docs** — should show the Email MCP API docs
+
+If either of those doesn't load, the corresponding server didn't start. Check the terminal output for errors.
+
+---
+
+### Step 5 — Open the UI
+
+Go to **http://127.0.0.1:8000** in your browser. The dashboard loads directly — no build step required.
+
+Interactive API docs are at **http://127.0.0.1:8000/docs**.
+
+---
+
+### Step 6 — Run the agent demo
+
+Open a **third terminal** in the repo root:
+
+**Windows:**
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD;$PWD\backend"
+python demo/agent.py
+```
+
+**macOS / Linux:**
+```bash
+source .venv/bin/activate
+PYTHONPATH=.:backend python demo/agent.py
+```
+
+The agent reads the live inbox, finds instructions in email bodies, constructs tool calls, and ActionProof intercepts them. Press Enter to step through each workflow.
+
+---
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `ModuleNotFoundError: No module named 'app'` | Make sure `PYTHONPATH` is set correctly as shown above |
+| `Connection refused` on port 8000 or 8001 | The corresponding server isn't running — check Terminal 1 and 2 |
+| Inbox shows 0 messages | Delete `mock_email_mcp/data/mailbox.db` and restart Terminal 1 |
+| `Address already in use` | Another process is on that port — change `--port 8000` to `--port 8080` and update the other server's URL in `.env` |
+| Running in Replit / Codespaces / online IDE | Won't work — must run on a local machine |
 
 ---
 
