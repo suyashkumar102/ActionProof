@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
+
+from .security.canonical import canonical_json
 
 
 SCHEMA = """
@@ -158,6 +161,47 @@ def connect(path: Path) -> sqlite3.Connection:
 def initialize(path: Path) -> None:
     with connect(path) as connection:
         connection.executescript(SCHEMA)
+        audit_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(audit_events)")
+        }
+        added_audit_hash_columns = False
+        if "event_hash" not in audit_columns:
+            connection.execute(
+                "ALTER TABLE audit_events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''"
+            )
+            added_audit_hash_columns = True
+        if "previous_hash" not in audit_columns:
+            connection.execute(
+                "ALTER TABLE audit_events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''"
+            )
+            added_audit_hash_columns = True
+
+        # Older databases stored audit events without chain hashes. Backfill them
+        # once when the columns are first added so history remains verifiable.
+        if added_audit_hash_columns:
+            previous_by_transaction: dict[str, str] = {}
+            rows = connection.execute(
+                "SELECT id, transaction_id, event_type, message, metadata_json, created_at "
+                "FROM audit_events ORDER BY transaction_id, id"
+            ).fetchall()
+            for row in rows:
+                previous_hash = previous_by_transaction.get(row["transaction_id"], "genesis")
+                event_payload = {
+                    "event_type": row["event_type"],
+                    "message": row["message"],
+                    "metadata_json": row["metadata_json"],
+                    "created_at": row["created_at"],
+                    "previous_hash": previous_hash,
+                }
+                event_hash = "sha256:" + hashlib.sha256(
+                    canonical_json(event_payload).encode("utf-8")
+                ).hexdigest()
+                connection.execute(
+                    "UPDATE audit_events SET event_hash=?, previous_hash=? WHERE id=?",
+                    (event_hash, previous_hash, row["id"]),
+                )
+                previous_by_transaction[row["transaction_id"]] = event_hash
+
         # Seed default policies
         now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
         for p in DEFAULT_POLICIES:
