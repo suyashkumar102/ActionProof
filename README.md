@@ -136,14 +136,20 @@ Untrusted Agent
 
 ## Run Locally
 
-Python 3.11 or later. Two terminals from the repository root.
+Python 3.11 or later. Three terminals from the repository root.
 
-**Terminal 1 — simulated Email MCP server**
+**Step 1 — Install dependencies (once)**
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r backend\requirements.txt
+```
+
+**Terminal 1 — Email MCP server**
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH = "$PWD;$PWD\backend"
 uvicorn mock_email_mcp.server:app --port 8001
 ```
@@ -156,11 +162,35 @@ $env:PYTHONPATH = "$PWD;$PWD\backend"
 uvicorn backend.app.main:app --reload --port 8000
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000) to access the demo UI.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000) to access the interactive UI.
 
 Interactive API documentation is available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
 No Node.js, no build step, no secrets file required. The `.env.example` file documents all configurable environment variables.
+
+---
+
+## Running the Agent Demo
+
+With both servers running, open a third terminal and run the agent:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD;$PWD\backend"
+python demo/agent.py
+```
+
+The agent works through all five attack scenarios sequentially, printing its reasoning and tool calls to the terminal as it runs. Each scenario pauses between steps — press Enter to advance. The agent has no prior knowledge of the security policies; it simply attempts actions and ActionProof intercepts them at the execution boundary.
+
+**Scenario walkthrough:**
+
+| # | What the agent does | What ActionProof does |
+|---|---|---|
+| 1 | Sends meeting notes to an internal colleague | Allows — policy satisfied, email delivered |
+| 2 | Follows an injected instruction found inside a retrieved email, attempts to send `confidential_q4.pdf` to an external attacker | Denies — protected attachment blocked before the tool is called |
+| 3 | Gets approval to email a partner, then silently changes the recipient to an attacker before executing | Blocks — fingerprint mismatch detected at execution time |
+| 4 | Attempts a tool call after an attacker has modified the tool's description downstream | Blocks — registry drift detected, no transaction created |
+| 5 | Reuses a consumed approval token to attempt a second execution | Blocks — token already consumed, replay rejected |
 
 ---
 
