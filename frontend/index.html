@@ -81,8 +81,8 @@
     <!-- Top bar -->
     <header class="topbar">
       <div class="topbar-left">
-        <span id="workflow-title" class="workflow-title">Select a workflow</span>
-        <span id="workflow-sub" class="workflow-sub">Choose from the sidebar to watch the agent run live</span>
+        <span id="workflow-title" class="workflow-title">Gateway console</span>
+        <span id="workflow-sub" class="workflow-sub">Inspect agent actions, approvals and delivery.</span>
       </div>
       <div class="flex items-center gap-4">
         <!-- Stats bar -->
@@ -98,7 +98,17 @@
       </div>
     </header>
 
+    <section id="demo-intro" class="demo-intro" aria-labelledby="intro-title">
+      <div><h1 id="intro-title">Can an email instruct your agent?</h1>
+      <p>Follow an inbox request from the agent to the gateway. See which actions need your approval.</p></div>
+      <button id="start-demo" type="button">Run inbox demo <span aria-hidden="true">→</span></button>
+    </section>
     <!-- D3 transaction graph strip -->
+    <section id="decision-panel" class="decision-panel" role="status" hidden>
+      <div class="decision-label">Latest gateway decision</div>
+      <strong id="decision-title"></strong>
+      <p id="decision-detail"></p>
+    </section>
     <div class="tx-graph-bar">
       <svg id="tx-graph" width="100%" height="48"></svg>
     </div>

@@ -20,8 +20,14 @@ async function api(method, path, body) {
 //  THREE.JS — Particle network background
 // ═══════════════════════════════════════════════════════════════════
 (function initThree() {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || !window.THREE) return;
   const canvas = $('bg-canvas');
-  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  } catch {
+    return;
+  }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
   const scene = new THREE.Scene();
@@ -378,7 +384,18 @@ function agentFileRead(data) {
 // ═══════════════════════════════════════════════════════════════════
 //  Gateway feed
 // ═══════════════════════════════════════════════════════════════════
+function showDecision(title, detail, tone) {
+  const panel = $('decision-panel');
+  panel.dataset.tone = tone;
+  $('decision-title').textContent = title;
+  $('decision-detail').textContent = detail || '';
+  panel.hidden = false;
+}
+
 function gwDecision(decision, reason, txId, fingerprint) {
+  const titles = { ALLOW: 'Action allowed', DENY: 'Action denied', REQUIRE_APPROVAL: 'Approval required',
+    REJECTED: 'Action rejected', BLOCKED: 'Action blocked', EXECUTED: 'Action executed' };
+  showDecision(titles[decision] || decision, reason, decision);
   txCount++;
   $('tx-count').textContent = `${txCount} transaction${txCount===1?'':'s'}`;
   tickCounter('tx-count');
@@ -402,7 +419,9 @@ function gwDecision(decision, reason, txId, fingerprint) {
 }
 
 function gwBlocked(reason, code, extra) {
+  showDecision('Action blocked', reason, 'BLOCKED');
   txCount++;
+  $('tx-count').textContent = `${txCount} transaction${txCount === 1 ? '' : 's'}`;
   updateStats('BLOCKED');
   d3AddNode('BLOCKED', 'BLKD');
   let extraHtml = '';
@@ -429,6 +448,7 @@ function gwBlocked(reason, code, extra) {
 }
 
 function gwExecuted(txId, to) {
+  showDecision('Email delivered', to, 'EXECUTED');
   updateStats('EXECUTED');
   d3AddNode('EXECUTED', 'EXEC');
   const row = el('div', 'gw-row gw-executed',
@@ -549,7 +569,25 @@ const WORKFLOW_META = {
 async function runWorkflow(wf) {
   if (running) return;
   running = true;
+  const controls = document.querySelectorAll('.wf-btn, #btn-reset, #start-demo');
+  controls.forEach(button => button.disabled = true);
+  try {
+    await streamWorkflow(wf);
+  } catch {
+    $('agent-status').textContent = 'interrupted';
+    setBadge('idle', 'RUN INTERRUPTED');
+    setIdle('agent-feed', 'The demo connection was interrupted. Select a workflow to try again.');
+  } finally {
+    running = false;
+    controls.forEach(button => button.disabled = false);
+  }
+}
+
+async function streamWorkflow(wf) {
+  $('decision-panel').hidden = true;
+  $('demo-intro').hidden = true;
   stats = { blocked: 0, allowed: 0, pending: 0 };
+  ['stat-blocked', 'stat-allowed', 'stat-pending'].forEach(id => $(id).textContent = '0');
   txCount = 0; txNodes.length = 0;
   d3.select('#tx-graph').selectAll('*').remove();
 
@@ -578,6 +616,7 @@ async function runWorkflow(wf) {
     body: JSON.stringify({ workflow: wf }),
   });
 
+  if (!resp.ok || !resp.body) throw new Error('Workflow stream unavailable');
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -624,13 +663,12 @@ async function runWorkflow(wf) {
       }
       else if (kind === 'registry_status') showRegistryEvent(data);
       else if (kind === 'done') break;
-      else if (kind === 'error') gwBlocked(data.message, 'ERROR');
+      else if (kind === 'error') throw new Error(data.message);
     }
   }
 
   $('agent-status').textContent = 'done';
   setBadge('idle', 'GATEWAY IDLE');
-  running = false;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -655,8 +693,10 @@ $('btn-reset').addEventListener('click', async () => {
   $('tx-count').textContent = '0 transactions';
   $('sent-count').textContent = '0';
   $('mailbox-count').textContent = '0 sent';
-  $('workflow-title').textContent = 'Select a workflow';
-  $('workflow-sub').textContent   = 'Choose from the sidebar to watch the agent run live';
+  $('demo-intro').hidden = false;
+  $('decision-panel').hidden = true;
+  $('workflow-title').textContent = 'Gateway console';
+  $('workflow-sub').textContent   = 'Inspect agent actions, approvals and delivery.';
   $('agent-status').textContent   = 'waiting';
   $('approval-status').textContent = 'idle';
   setBadge('idle', 'GATEWAY IDLE');
@@ -672,10 +712,7 @@ document.querySelectorAll('.wf-btn').forEach(btn =>
   btn.addEventListener('click', () => runWorkflow(btn.dataset.wf))
 );
 
-// Initial entrance animation
-gsap.from('.sidebar', { x: -20, opacity: 0, duration: .5, ease: 'power2.out' });
-gsap.from('.topbar',  { y: -10, opacity: 0, duration: .4, delay: .1 });
-gsap.from('.col',     { opacity: 0, y: 10, stagger: .1, duration: .4, delay: .2 });
+$('start-demo').addEventListener('click', () => runWorkflow('read_and_act'));
 
 loadInbox();
 loadSent();
