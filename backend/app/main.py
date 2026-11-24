@@ -15,7 +15,7 @@ from .clients.email_mcp_client import EmailMCPClient
 from .clients.filesystem_mcp_client import FilesystemMCPClient
 from .config import ROOT, settings
 from .db import connect, initialize
-from .models import ExecuteRequest, parse_invocation
+from .models import ExecuteRequest, Invocation, parse_invocation
 from .security.canonical import canonical_json
 from .security.fingerprint import sha256_prefixed
 from .transactions import ServiceError, TransactionService
