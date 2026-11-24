@@ -303,13 +303,13 @@ async def _agent_read_and_act(emit):
 
         invocation = {"server_id": "mock-email-v1", "tool_name": "send_email", "arguments": args}
         try:
-            tx = service.propose(Invocation(**invocation))
+            parsed = parse_invocation(invocation)
+            tx = service.propose(parsed)
             decision = tx.decision
             await emit("gateway", {"decision": decision, "reason": tx.reason,
                                    "transaction_id": tx.transaction_id, "fingerprint": tx.fingerprint})
             if decision == "ALLOW":
-                req = ExecuteRequest(invocation=Invocation(**invocation))
-                await service.execute(tx.transaction_id, req.invocation, None)
+                await service.execute(tx.transaction_id, parsed, None)
                 await emit("executed", {"transaction_id": tx.transaction_id, "to": args["to"]})
             elif decision == "DENY":
                 await emit("blocked", {"reason": tx.reason, "transaction_id": tx.transaction_id})
