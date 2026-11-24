@@ -1,0 +1,14 @@
+{
+  "name": "send_email",
+  "description": "Send a message through the simulated email service.",
+  "input_schema": {
+    "type": "object",
+    "required": ["to", "subject", "body", "attachment"],
+    "properties": {
+      "to": {"type": "string"},
+      "subject": {"type": "string"},
+      "body": {"type": "string"},
+      "attachment": {"type": "string"}
+    }
+  }
+}
