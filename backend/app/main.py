@@ -15,7 +15,7 @@ from .clients.email_mcp_client import EmailMCPClient
 from .clients.filesystem_mcp_client import FilesystemMCPClient
 from .config import ROOT, settings
 from .db import connect, initialize
-from .models import ExecuteRequest, parse_invocation
+from .models import ExecuteRequest, Invocation, parse_invocation
 from .security.canonical import canonical_json
 from .security.fingerprint import sha256_prefixed
 from .transactions import ServiceError, TransactionService
@@ -308,10 +308,9 @@ async def _agent_read_and_act(emit):
             await emit("gateway", {"decision": decision, "reason": tx.reason,
                                    "transaction_id": tx.transaction_id, "fingerprint": tx.fingerprint})
             if decision == "ALLOW":
-                req = ExecuteRequest(invocation=Invocation(**invocation))
-                await service.execute(tx.transaction_id, req.invocation, None)
+                await service.execute(tx.transaction_id, parse_invocation(invocation), None)
                 await emit("executed", {"transaction_id": tx.transaction_id, "to": args["to"]})
-            elif decision == "DENY":
+            elif decision in {"DENY", "BLOCKED"}:
                 await emit("blocked", {"reason": tx.reason, "transaction_id": tx.transaction_id})
         except ServiceError as e:
             await emit("blocked", {"reason": e.message, "code": e.code})
