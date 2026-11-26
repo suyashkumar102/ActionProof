@@ -33,7 +33,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 
 /* ── Sidebar ── */
 .sidebar {
-  background: var(--surface);
+  background: rgb(22 27 34 / 45%);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -154,7 +154,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg);
+  background: transparent;
 }
 
 /* ── Top bar ── */
@@ -526,3 +526,72 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 }
 .egress-detail { font-size: 11px; color: var(--muted); }
 .egress-detail b { color: var(--red); }
+
+.demo-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: clamp(24px, 4vw, 60px);
+  background: radial-gradient(ellipse at top right, rgb(38 73 89 / 70%), transparent 65%), rgb(22 41 51 / 40%);
+  border-bottom: 1px solid #41616e;
+}
+.demo-intro[hidden] { display: none; }
+.demo-intro h1 { max-width: 18ch; font-size: clamp(32px, 3.7vw, 58px); line-height: 1.04; letter-spacing: -.048em; font-weight: 650; }
+.demo-intro p { max-width: 54ch; margin-top: 14px; color: #c1d2da; line-height: 1.55; font-size: 15px; }
+#start-demo { background: #aff1dc; color: #0d302b; border-radius: 8px; padding: 13px 18px; font-weight: 700; white-space: nowrap; transition: background .18s, transform .18s; }
+#start-demo:hover { background: #d0ffed; transform: translateY(-2px); }
+button:focus-visible { outline: 3px solid #96ddff; outline-offset: 2px; }
+.topbar-left { min-width: 0; }
+.topbar > div:last-child > div:first-child { font-size: 12px; }
+.topbar b { font-size: 17px; }
+.col-heading { font-size: 12px; color: #c6d2dc; }
+.gateway-col .col-heading { background: #18312f; color: #aff1dc; }
+.agent-feed:has(> .feed-idle:only-child), .gateway-feed:has(> .feed-idle:only-child) { justify-content: flex-end; }
+.feed-idle { line-height: 1.55; }
+@media (max-width: 900px) {
+  html, body { height: auto; overflow: auto !important; }
+  .shell { display: flex; flex-direction: column; height: auto; }
+  .main-area { order: -1; overflow: visible; }
+  .sidebar { display: flex; }
+  .shell { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .main-area, .sidebar { display: contents; }
+  .topbar, .demo-intro { flex-wrap: wrap; }
+  .sidebar-brand { grid-row: 1; }
+  .topbar { grid-row: 2; }
+  .demo-intro { grid-row: 3; }
+  .workflow-nav { display: flex; overflow-x: auto; }
+  .wf-btn { min-width: 185px; }
+  .sidebar-label:first-of-type { grid-row: 4; }
+  .workflow-nav { grid-row: 5; }
+  .tx-graph-bar { grid-row: 6; }
+  .columns { grid-row: 7; overflow: visible; }
+  .col { min-height: 150px; overflow: visible; }
+  .topbar { gap: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+html, .shell * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
+.decision-panel {
+  --decision-ink: var(--text);
+  color: var(--decision-ink);
+  padding: 16px clamp(16px, 3vw, 42px);
+  border-inline-start: 4px solid currentColor;
+  background: linear-gradient(110deg, color-mix(in srgb, currentColor 12%, var(--bg)), var(--bg));
+  animation: slideIn .2s ease-out;
+}
+.decision-panel[data-tone="DENY"], .decision-panel[data-tone="BLOCKED"],
+.decision-panel[data-tone="REJECTED"] { --decision-ink: #ffaaa4; }
+.decision-panel[data-tone="REQUIRE_APPROVAL"] { --decision-ink: #ffda88; }
+.decision-panel[data-tone="EXECUTED"], .decision-panel[data-tone="ALLOW"] { --decision-ink: #aff1dc; }
+.decision-label { font: 12px var(--mono); }
+#decision-title { display: block; margin: 3px 0; font-size: clamp(23px, 2.5vw, 38px); line-height: 1.12; }
+#decision-detail { font-size: 15px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+.wf-btn:disabled, .reset-btn:disabled { cursor: wait; }
+@media (max-width: 900px) {
+  .decision-panel { grid-row: 6; }
+  .tx-graph-bar { grid-row: 7; }
+  .columns { grid-row: 8; }
+}
